@@ -5,8 +5,14 @@ import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, order
 
 // Globala variabler för Firebase-konfiguration (tillhandahålls av Canvas-miljön)
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-hand-raise-app';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+const firebaseConfig = {
+  apiKey: "DIN_API_KEY",
+  authDomain: "DIN_APP.firebaseapp.com",
+  projectId: "DIN_PROJECT_ID",
+  storageBucket: "DIN_APP.appspot.com",
+  messagingSenderId: "XXXX",
+  appId: "XXXX"
+};const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 function App() {
     const [db, setDb] = useState(null);
