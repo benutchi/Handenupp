@@ -3,16 +3,20 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, orderBy, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
-// Globala variabler för Firebase-konfiguration (tillhandahålls av Canvas-miljön)
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-hand-raise-app';
+// Globala variabler för Firebase-konfiguration
+const appId = 'default-hand-raise-app';
+
 const firebaseConfig = {
-  apiKey: "DIN_API_KEY",
-  authDomain: "DIN_APP.firebaseapp.com",
-  projectId: "DIN_PROJECT_ID",
-  storageBucket: "DIN_APP.appspot.com",
-  messagingSenderId: "XXXX",
-  appId: "XXXX"
-};const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+  apiKey: "AIzaSyDMUGGMFLFWEHYFn3MwCW5oKRvcPy_fyvs",
+  authDomain: "profilapp-7101f.firebaseapp.com",
+  projectId: "profilapp-7101f",
+  storageBucket: "profilapp-7101f.firebasestorage.app",
+  messagingSenderId: "302067581616",
+  appId: "1:302067581616:web:80171b1161b568a2acf175",
+  measurementId: "G-9D5N74JWT1"
+};
+
+const initialAuthToken = null;
 
 function App() {
     const [db, setDb] = useState(null);
