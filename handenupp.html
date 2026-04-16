@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, orderBy, deleteDoc, serverTimestamp } from 'firebase/firestore';
-
+import { getFirestore, doc, setDoc, getDoc, getDocs, onSnapshot, collection, query, orderBy, deleteDoc, serverTimestamp } from 'firebase/firestore';
 // Globala variabler för Firebase-konfiguration
 const appId = 'default-hand-raise-app';
 
