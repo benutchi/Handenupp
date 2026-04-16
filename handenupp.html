@@ -1,0 +1,464 @@
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, orderBy, deleteDoc, serverTimestamp } from 'firebase/firestore';
+
+// Globala variabler för Firebase-konfiguration (tillhandahålls av Canvas-miljön)
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-hand-raise-app';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+function App() {
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+
+    const [view, setView] = useState('home'); // 'home', 'teacher', 'student_join', 'student_room'
+    const [currentRoomCode, setCurrentRoomCode] = useState('');
+    const [studentName, setStudentName] = useState('');
+    const [errorMessage, setErrorMessage] = useState('');
+    const [loading, setLoading] = useState(true);
+
+    // 1. Firebase-initiering och autentisering
+    useEffect(() => {
+        const initializeFirebase = async () => {
+            try {
+                const app = initializeApp(firebaseConfig);
+                const firestore = getFirestore(app);
+                const authInstance = getAuth(app);
+
+                setDb(firestore);
+                setAuth(authInstance);
+
+                // Lyssna på autentiseringsstatus
+                onAuthStateChanged(authInstance, async (user) => {
+                    if (user) {
+                        setUserId(user.uid);
+                        setIsAuthReady(true);
+                        setLoading(false);
+                    } else {
+                        // Om ingen användare är inloggad, försök logga in med anpassad token eller anonymt
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(authInstance, initialAuthToken);
+                        } else {
+                            await signInAnonymously(authInstance);
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Fel vid initiering av Firebase eller autentisering:", e);
+                setErrorMessage("Kunde inte ansluta till tjänsten. Försök igen senare.");
+                setLoading(false);
+            }
+        };
+
+        initializeFirebase();
+    }, []); // Körs bara en gång vid komponentens mount
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                <p className="text-gray-700 text-xl">Laddar...</p>
+            </div>
+        );
+    }
+
+    if (errorMessage) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-red-100 text-red-700 p-4 rounded-lg">
+                <p>{errorMessage}</p>
+            </div>
+        );
+    }
+
+    // Huvudkomponent för val av roll
+    const HomeView = () => (
+        <div className="bg-white p-8 rounded-lg shadow-xl text-center max-w-sm w-full">
+            <h1 className="text-3xl font-bold mb-6 text-gray-800">Räcka Upp Handen</h1>
+            <p className="text-gray-600 mb-8">Välj din roll:</p>
+            <div className="space-y-4">
+                <button
+                    onClick={() => setView('teacher')}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-blue-300"
+                >
+                    Jag är lärare
+                </button>
+                <button
+                    onClick={() => setView('student_join')}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-green-300"
+                >
+                    Jag är elev
+                </button>
+            </div>
+        </div>
+    );
+
+    // Komponent för lärare
+    const TeacherView = () => {
+        const [roomCode, setRoomCode] = useState('');
+        const [queue, setQueue] = useState([]);
+        const [activeRoomId, setActiveRoomId] = useState(null);
+        const [teacherError, setTeacherError] = useState('');
+        const [isCreatingRoom, setIsCreatingRoom] = useState(false); // Ny lokal laddningsstatus
+
+        // Skapa nytt rum
+        const createRoom = async () => {
+            if (!db || !userId) {
+                setTeacherError("Tjänsten är inte redo. Försök igen.");
+                return;
+            }
+            setTeacherError('');
+            setIsCreatingRoom(true); // Sätt lokal laddningsstatus till true
+            try {
+                const newCode = Math.floor(100000 + Math.random() * 900000).toString(); // 6-siffrig kod
+                const roomDocRef = doc(db, `artifacts/${appId}/public/data/rooms/${newCode}`);
+                await setDoc(roomDocRef, {
+                    teacherId: userId,
+                    code: newCode,
+                    createdAt: serverTimestamp(),
+                    active: true,
+                });
+                setRoomCode(newCode);
+                setActiveRoomId(newCode); // Detta bör trigga omrendering och visa rumsdetaljerna
+            } catch (e) {
+                console.error("Fel vid skapande av rum:", e);
+                setTeacherError("Kunde inte skapa rum. Försök igen: " + e.message); // Mer specifik felmeddelande
+            } finally {
+                setIsCreatingRoom(false); // Återställ lokal laddningsstatus
+            }
+        };
+
+        // Lyssna på kön i realtid
+        useEffect(() => {
+            if (!db || !activeRoomId) return;
+
+            const q = query(collection(db, `artifacts/${appId}/public/data/rooms/${activeRoomId}/queue`));
+            // Firestore orderBy() är inte stödd i denna miljö, sortera lokalt
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const newQueue = [];
+                snapshot.forEach(doc => {
+                    newQueue.push({ id: doc.id, ...doc.data() });
+                });
+                // Sortera efter raisedAt lokalt
+                newQueue.sort((a, b) => (a.raisedAt?.toMillis() || 0) - (b.raisedAt?.toMillis() || 0));
+                setQueue(newQueue);
+            }, (err) => {
+                console.error("Fel vid hämtning av kö:", err);
+                setTeacherError("Kunde inte hämta kö. Försök igen.");
+            });
+
+            return () => unsubscribe();
+        }, [db, activeRoomId]);
+
+        // Kalla nästa elev i kön
+        const callNextStudent = async () => {
+            if (queue.length === 0) return;
+            if (!db || !activeRoomId) return;
+
+            setLoading(true); // Global laddningsstatus för denna åtgärd
+            try {
+                const nextStudentId = queue[0].id;
+                await deleteDoc(doc(db, `artifacts/${appId}/public/data/rooms/${activeRoomId}/queue/${nextStudentId}`));
+            } catch (e) {
+                console.error("Fel vid borttagning av elev från kö:", e);
+                setTeacherError("Kunde inte ta bort elev från kö. Försök igen.");
+            } finally {
+                setLoading(false); // Återställ global laddningsstatus
+            }
+        };
+
+        // Rensa hela kön
+        const clearQueue = async () => {
+            if (!db || !activeRoomId) return;
+
+            setLoading(true); // Global laddningsstatus för denna åtgärd
+            try {
+                const q = query(collection(db, `artifacts/${appId}/public/data/rooms/${activeRoomId}/queue`));
+                const snapshot = await getDocs(q);
+                const deletePromises = [];
+                snapshot.forEach(doc => {
+                    deletePromises.push(deleteDoc(doc.ref));
+                });
+                await Promise.all(deletePromises);
+            } catch (e) {
+                console.error("Fel vid rensning av kö:", e);
+                setTeacherError("Kunde inte rensa kö. Försök igen.");
+            } finally {
+                setLoading(false); // Återställ global laddningsstatus
+            }
+        };
+
+        return (
+            <div className="bg-white p-8 rounded-lg shadow-xl text-center max-w-lg w-full">
+                <h1 className="text-3xl font-bold mb-6 text-gray-800">Lärare: Ditt Rum</h1>
+                {teacherError && <p className="text-red-500 mb-4">{teacherError}</p>}
+                {activeRoomId ? (
+                    <div>
+                        <p className="text-gray-700 text-xl mb-4">Rumskod: <span className="font-bold text-blue-600 text-4xl">{roomCode}</span></p>
+                        <p className="text-gray-600 mb-6">Dela denna kod med dina elever.</p>
+
+                        <h2 className="text-2xl font-bold mb-4 text-gray-800">Kön:</h2>
+                        {queue.length === 0 ? (
+                            <p className="text-gray-500">Ingen har räckt upp handen ännu.</p>
+                        ) : (
+                            <ul className="space-y-2 mb-6">
+                                {queue.map((student, index) => (
+                                    <li key={student.id} className="bg-gray-100 p-3 rounded-lg flex justify-between items-center">
+                                        <span className="text-lg font-semibold">{index + 1}. {student.name}</span>
+                                        {/* Läraren kan ta bort en specifik elev om så önskas */}
+                                        <button
+                                            onClick={() => deleteDoc(doc(db, `artifacts/${appId}/public/data/rooms/${activeRoomId}/queue/${student.id}`))}
+                                            className="ml-4 text-red-500 hover:text-red-700 text-sm"
+                                        >
+                                            X
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+
+                        <div className="space-y-4">
+                            <button
+                                onClick={callNextStudent}
+                                className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-green-300"
+                                disabled={loading || queue.length === 0}
+                            >
+                                Kalla nästa elev ({queue.length > 0 ? queue[0].name : 'Ingen'})
+                            </button>
+                            <button
+                                onClick={clearQueue}
+                                className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-red-300"
+                                disabled={loading || queue.length === 0}
+                            >
+                                Rensa hela kön
+                            </button>
+                            <button
+                                onClick={() => { setActiveRoomId(null); setRoomCode(''); }}
+                                className="w-full bg-gray-400 hover:bg-gray-500 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-gray-300"
+                            >
+                                Stäng rum
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <button
+                        onClick={createRoom}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-blue-300"
+                        disabled={isCreatingRoom} // Använder lokal laddningsstatus för att inaktivera knappen
+                    >
+                        {isCreatingRoom ? 'Skapar rum...' : 'Skapa nytt rum'} {/* Visar text beroende på status */}
+                    </button>
+                )}
+                <button
+                    onClick={() => setView('home')}
+                    className="mt-8 text-blue-600 hover:underline"
+                >
+                    Tillbaka till start
+                </button>
+            </div>
+        );
+    };
+
+    // Komponent för elev att ansluta till rum
+    const StudentJoinView = () => {
+        const [joinError, setJoinError] = useState('');
+
+        const handleJoinRoom = async () => {
+            if (!db || !userId || !currentRoomCode || !studentName) {
+                setJoinError("Fyll i rumskod och ditt namn.");
+                return;
+            }
+            setJoinError('');
+            setLoading(true);
+            try {
+                const roomDocRef = doc(db, `artifacts/${appId}/public/data/rooms/${currentRoomCode}`);
+                const docSnap = await getDoc(roomDocRef);
+
+                if (docSnap.exists() && docSnap.data().active) {
+                    setView('student_room'); // Gå till elevrummet
+                } else {
+                    setJoinError("Rumskoden är ogiltig eller rummet är stängt.");
+                }
+            } catch (e) {
+                console.error("Fel vid anslutning till rum:", e);
+                setJoinError("Kunde inte ansluta till rummet. Försök igen.");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        return (
+            <div className="bg-white p-8 rounded-lg shadow-xl text-center max-w-sm w-full">
+                <h1 className="text-3xl font-bold mb-6 text-gray-800">Elev: Anslut till Rum</h1>
+                {joinError && <p className="text-red-500 mb-4">{joinError}</p>}
+                <div className="mb-4">
+                    <label htmlFor="roomCode" className="block text-gray-700 text-sm font-bold mb-2">
+                        Rumskod:
+                    </label>
+                    <input
+                        type="text"
+                        id="roomCode"
+                        value={currentRoomCode}
+                        onChange={(e) => setCurrentRoomCode(e.target.value)}
+                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                        placeholder="Ange rumskod"
+                    />
+                </div>
+                <div className="mb-6">
+                    <label htmlFor="studentName" className="block text-gray-700 text-sm font-bold mb-2">
+                        Ditt namn:
+                    </label>
+                    <input
+                        type="text"
+                        id="studentName"
+                        value={studentName}
+                        onChange={(e) => setStudentName(e.target.value)}
+                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                        placeholder="Ditt namn"
+                    />
+                </div>
+                <button
+                    onClick={handleJoinRoom}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-green-300"
+                    disabled={loading}
+                >
+                    Anslut
+                </button>
+                <button
+                    onClick={() => setView('home')}
+                    className="mt-8 text-blue-600 hover:underline"
+                >
+                    Tillbaka till start
+                </button>
+            </div>
+        );
+    };
+
+    // Komponent för elev i rummet
+    const StudentRoomView = () => {
+        const [handRaised, setHandRaised] = useState(false);
+        const [studentRoomError, setStudentRoomError] = useState('');
+        const [queue, setQueue] = useState([]); // För att se sin egen plats i kön
+
+        // Lyssna på kön i realtid för att se sin plats
+        useEffect(() => {
+            if (!db || !currentRoomCode) return;
+
+            const q = query(collection(db, `artifacts/${appId}/public/data/rooms/${currentRoomCode}/queue`));
+            // Firestore orderBy() är inte stödd i denna miljö, sortera lokalt
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const newQueue = [];
+                snapshot.forEach(doc => {
+                    newQueue.push({ id: doc.id, ...doc.data() });
+                });
+                // Sortera efter raisedAt lokalt
+                newQueue.sort((a, b) => (a.raisedAt?.toMillis() || 0) - (b.raisedAt?.toMillis() || 0));
+                setQueue(newQueue);
+
+                // Kontrollera om elevens hand fortfarande är uppe
+                const myHand = newQueue.find(student => student.id === userId);
+                setHandRaised(!!myHand); // True om handen finns i kön, annars false
+            }, (err) => {
+                console.error("Fel vid hämtning av kö (elev):", err);
+                setStudentRoomError("Kunde inte hämta kö. Försök igen.");
+            });
+
+            return () => unsubscribe();
+        }, [db, currentRoomCode, userId]);
+
+        const raiseHand = async () => {
+            if (!db || !userId || !currentRoomCode || !studentName) {
+                setStudentRoomError("Kunde inte räcka upp handen. Saknar information.");
+                return;
+            }
+            setStudentRoomError('');
+            setLoading(true);
+            try {
+                const studentHandRef = doc(db, `artifacts/${appId}/public/data/rooms/${currentRoomCode}/queue/${userId}`);
+                await setDoc(studentHandRef, {
+                    name: studentName,
+                    raisedAt: serverTimestamp(),
+                });
+                setHandRaised(true);
+            } catch (e) {
+                console.error("Fel vid uppräckning av hand:", e);
+                setStudentRoomError("Kunde inte räcka upp handen. Försök igen.");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        const lowerHand = async () => {
+            if (!db || !userId || !currentRoomCode) {
+                setStudentRoomError("Kunde inte sänka handen. Saknar information.");
+                return;
+            }
+            setStudentRoomError('');
+            setLoading(true);
+            try {
+                const studentHandRef = doc(db, `artifacts/${appId}/public/data/rooms/${currentRoomCode}/queue/${userId}`);
+                await deleteDoc(studentHandRef);
+                setHandRaised(false);
+            } catch (e) {
+                console.error("Fel vid sänkning av hand:", e);
+                setStudentRoomError("Kunde inte sänka handen. Försök igen.");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        const myPositionInQueue = queue.findIndex(student => student.id === userId) + 1;
+
+        return (
+            <div className="bg-white p-8 rounded-lg shadow-xl text-center max-w-sm w-full">
+                <h1 className="text-3xl font-bold mb-6 text-gray-800">Elev: Rum {currentRoomCode}</h1>
+                {studentRoomError && <p className="text-red-500 mb-4">{studentRoomError}</p>}
+                <p className="text-gray-700 text-xl mb-4">Välkommen, <span className="font-semibold">{studentName}</span>!</p>
+
+                {handRaised ? (
+                    <div>
+                        <p className="text-green-600 text-2xl font-bold mb-4">Handen är uppe! 👋</p>
+                        {myPositionInQueue > 0 && (
+                            <p className="text-gray-700 text-lg mb-4">Din plats i kön: <span className="font-bold text-blue-600">{myPositionInQueue}</span></p>
+                        )}
+                        <button
+                            onClick={lowerHand}
+                            className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-red-300"
+                            disabled={loading}
+                        >
+                            Sänk handen
+                        </button>
+                    </div>
+                ) : (
+                    <button
+                        onClick={raiseHand}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full text-lg shadow-md transition duration-150 ease-in-out active:scale-95 focus:outline-none focus:ring-4 focus:ring-blue-300"
+                        disabled={loading}
+                    >
+                        Räck upp handen
+                    </button>
+                )}
+                <button
+                    onClick={() => { setView('student_join'); setHandRaised(false); setStudentName(''); setCurrentRoomCode(''); }}
+                    className="mt-8 text-blue-600 hover:underline"
+                >
+                    Lämna rum
+                </button>
+            </div>
+        );
+    };
+
+    // Huvudrenderingslogik baserat på 'view' state
+    return (
+        <div className="bg-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+            {view === 'home' && <HomeView />}
+            {view === 'teacher' && <TeacherView />}
+            {view === 'student_join' && <StudentJoinView />}
+            {view === 'student_room' && <StudentRoomView />}
+        </div>
+    );
+}
+
+export default App;
+
